@@ -20,8 +20,8 @@ It's not a general fix for Loki, and it's not meant for `arm64`, `amd64` or unre
 
 ## What's going on
 
-Loki keeps a number of statistics counters (processed lines, transferred bytes, processing times...) and updates them with atomic operations on 64-bit integers. On some 32-bit ARM setups, these operations require the integer to be properly aligned in memory. The panic means that wasn't the case.
-
+Loki keeps a number of statistics counters (processed lines, transferred bytes, processing times...) and updates them with atomic operations on 64-bit integers. On some 32-bit ARM setups, these operations require the integer to be properly aligned in memory. 
+The panic indicates that a 64-bit atomic operation was attempted on a memory address that did not meet the required alignment. The patch attempts to avoid the affected atomic operations in the statistics code on 32-bit ARM, but the root cause has not yet been fully confirmed.
 Instead of dealing with the alignment, the patch avoids the affected atomic operations on 32-bit ARM.
 
 ## What the patch changes
