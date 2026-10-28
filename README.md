@@ -72,4 +72,4 @@ A successful check only means the patch applies. It doesn't tell you the result 
 
 ## License
 
-This patch modifies code from [Grafana Loki](https://github.com/grafana/loki). Check the project's license before redistributing, and keep any copyright notices that apply.
+This patch modifies code from [Grafana Loki](https://github.com/grafana/loki).
