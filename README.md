@@ -1,137 +1,75 @@
-# Loki-ARM32-Atomic-Operations-Patch---Raspberry-OS
-Patch for : panic: unaligned 64-bit atomic operation 
-# Loki ARM32 Atomic Operations Patch
+# Loki ARM32 atomic operations patch
 
-## Overview
-
-This repository contains an experimental patch intended for **Grafana Loki 3.6.16 running on a 32-bit ARM architecture**.
-
-The patch aims to work around a potential issue involving atomic operations on 64-bit integers, which may cause the following panic:
+An experimental patch for Grafana Loki 3.6.16 on 32-bit ARM. I wrote it after Loki crashed on my Raspberry Pi 3B+ (32-bit Raspberry Pi OS) with this panic:
 
 ```text
 panic: unaligned 64-bit atomic operation
 ```
 
-This issue was encountered while testing Loki on a Raspberry Pi 3B+ running 32-bit Raspberry Pi OS.
+**Status: experimental.** The patch applies cleanly to the original source file, but I haven't tested it at runtime yet, so I can't say whether it actually stops the panic.
 
-**Status: Experimental.** The patch has been verified to apply to the original source file. However, its effectiveness in preventing the panic has not yet been confirmed through runtime testing.
+## Is this for you?
 
-## When might this patch be useful?
+Probably only if all of these are true:
 
-This patch may be relevant when all the following conditions apply:
+- you build and run Loki for 32-bit `linux/arm`
+- Loki crashes with the panic above
+- the crash happens while Loki handles query statistics (`pkg/logqlmodel/stats`)
 
-- Loki is compiled and run for the 32-bit `linux/arm` architecture.
-- Loki crashes with the `unaligned 64-bit atomic operation` panic.
-- The issue occurs while processing Loki query statistics, particularly in the `pkg/logqlmodel/stats` package.
+It's not a general fix for Loki, and it's not meant for `arm64`, `amd64` or unrelated errors.
 
-This is not a general-purpose fix for all Loki issues. It is not intended for 64-bit ARM (`arm64`), 64-bit x86 (`amd64`), or unrelated errors.
+## What's going on
 
-## Why might this issue occur?
+Loki keeps a number of statistics counters (processed lines, transferred bytes, processing times...) and updates them with atomic operations on 64-bit integers. On some 32-bit ARM setups, these operations require the integer to be properly aligned in memory. The panic means that wasn't the case.
 
-Loki uses atomic operations to update several statistics counters, including the number of processed lines, transferred bytes, and processing times.
+Instead of dealing with the alignment, the patch avoids the affected atomic operations on 32-bit ARM.
 
-Atomic operations on 64-bit integers can have memory-alignment requirements depending on the architecture and implementation.
+## What the patch changes
 
-On certain 32-bit ARM configurations, such an operation may fail if the required memory alignment is not satisfied.
+It only touches `pkg/logqlmodel/stats/context.go`:
 
-The panic indicates that an atomic operation on a 64-bit integer was attempted with incorrect memory alignment. This patch attempts to avoid the affected atomic operations for the relevant counters when running on 32-bit ARM.
-
-## What does the patch change?
-
-The patch modifies the following source file:
-
-`pkg/logqlmodel/stats/context.go`
-
-It introduces three main changes.
-
-### 1. Adds an `addInt64` function
-
-The patch introduces a helper function for updating an `int64` counter.
-
-- On 32-bit ARM, it uses a mutex (`c.mtx`) to protect the counter update.
-- On other architectures, it continues to use `atomic.AddInt64`.
-
-The goal is to replace the affected atomic operations with mutex-protected updates on 32-bit ARM.
-
-### 2. Protects result collection
-
-The `Result()` function also acquires the mutex on 32-bit ARM while reading and merging statistics.
-
-This is intended to prevent concurrent access from conflicting with the new counter-update mechanism.
-
-### 3. Replaces the affected atomic calls
-
-Several calls to `atomic.AddInt64` in the statistics context are replaced with calls to `c.addInt64`.
-
-The affected counters include statistics related to:
-
-- Ingester data
-- Chunks and indexes
-- Compressed and decompressed bytes
-- Processed lines
-- Caches
-- Queries and downloaded pages
+1. **New `addInt64` helper.** On 32-bit ARM it updates the counter under a mutex (`c.mtx`). On every other architecture it still calls `atomic.AddInt64`.
+2. **`Result()` takes the mutex too** on 32-bit ARM while it reads and merges the stats, so it doesn't conflict with the new updates.
+3. **Calls to `atomic.AddInt64` are replaced** with `c.addInt64`. The affected counters cover ingester data, chunks and indexes, compressed and decompressed bytes, processed lines, caches, and queries and downloaded pages.
 
 ## Expected impact
 
-On 32-bit ARM, the patch replaces the affected atomic operations with mutex-protected updates. This may prevent the panic if those operations are indeed its cause.
+On 32-bit ARM, mutexes replace atomics. If those atomics are really the cause, the panic should go away. The downside is extra synchronization, which could slow things down when many goroutines update stats at the same time. I haven't measured any of this, so treat both the fix and the performance cost as unconfirmed.
 
-However, this approach introduces synchronization and may reduce performance when multiple goroutines update statistics concurrently.
-
-On other architectures, the code retains the `atomic.AddInt64` implementation.
-
-**These effects still need to be measured. The patch is not guaranteed to eliminate the panic or improve performance.**
+Other architectures keep the original `atomic.AddInt64` code.
 
 ## Applying the patch
 
-The patch is provided as:
-
-`loki-arm32-atomic.patch`
-
-Apply it to the source code matching the targeted Loki version. Back up any existing modifications and ensure that the target source file has not already been changed.
-
-From the root of the Loki source repository, run:
+Run these from the root of the Loki repository, on source matching the targeted version. Back up any local changes first and make sure `context.go` hasn't already been modified.
 
 ```bash
 git apply --check loki-arm32-atomic.patch
-```
-
-If the check succeeds, apply the patch with:
-
-```bash
 git apply loki-arm32-atomic.patch
 ```
 
-A successful patch check does not replace compilation and runtime testing.
+A successful check only means the patch applies. It doesn't tell you the result compiles or runs correctly.
 
-## Testing requirements
+## Still to test
 
-The following tests are still required to validate the patch:
-
-1. Compile Loki for 32-bit ARM with the patch applied.
-2. Start Loki and check its readiness.
-3. Execute queries that exercise Loki's statistics handling.
-4. Check whether the panic reappears in the logs.
-5. Verify that counters and query results remain correct.
-6. Evaluate any impact on performance and concurrent access.
+1. Build Loki for 32-bit ARM with the patch applied
+2. Start Loki and check that it becomes ready
+3. Run queries that exercise the statistics code
+4. Check whether the panic still shows up in the logs
+5. Make sure counters and query results are still correct
+6. Look at the impact on performance and concurrent access
 
 ## Limitations
 
-- This is an experimental patch and is not presented as an official Grafana Loki fix.
-- It modifies the statistics operations in `context.go`; it may not address every possible cause of the panic.
-- Successful application does not guarantee correct runtime behavior.
-- Compatibility with other Loki versions has not been established.
+- This is not an official Grafana fix.
+- It only changes the stats operations in `context.go`, so it may not cover every cause of this panic.
+- Other Loki versions haven't been checked.
 
-## Original test environment
+## Where I tried it
 
-- **Software:** Grafana Loki
-- **Source version:** 3.6.16
-- **Target architecture:** 32-bit ARM (`linux/arm`)
-- **Test hardware:** Raspberry Pi 3B+
-- **Operating system:** 32-bit Raspberry Pi OS
+- Grafana Loki 3.6.16 (source)
+- 32-bit ARM (`linux/arm`)
+- Raspberry Pi 3B+ running 32-bit Raspberry Pi OS
 
-## License and attribution
+## License
 
-This patch modifies code from the Grafana Loki project. Before redistributing it, check the original project's license and retain any applicable copyright notices.
-
-Original project: https://github.com/grafana/loki
+This patch modifies code from [Grafana Loki](https://github.com/grafana/loki). Check the project's license before redistributing, and keep any copyright notices that apply.
